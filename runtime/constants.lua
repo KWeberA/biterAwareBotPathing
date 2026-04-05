@@ -15,6 +15,8 @@ constants.BOUNDS_PADDING = 2
 
 constants.DEBUG_FOLDER = "biter-aware-bot-pathing"
 constants.SMOKE_LAB_NAME = "construction-frontier-lab"
+constants.TEST_MAP_NAME = "right-angle-biter-test-map"
+constants.TEST_MAP_SURFACE_NAME = "babp-test-map"
 
 constants.THREAT_ENTITY_TYPES = {
   "turret",

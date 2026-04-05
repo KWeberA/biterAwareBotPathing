@@ -573,6 +573,25 @@ function manager.smoke_setup(player_index)
   return setup
 end
 
+function manager.test_map_setup(player_index)
+  local root = prepare_root(util.ensure_root())
+  local setup = with_mutation(function()
+    return smoke_lab.setup_test_map(root, player_index)
+  end)
+
+  local surface = game.surfaces[setup.surface_name]
+  local force = game.forces[setup.force_name]
+  mark_surface_dirty(root, surface.index)
+  mark_force_surface_dirty(root, surface.index, force.name)
+  recheck_force_surface(root, force, surface, true)
+
+  setup.summary_file = debug_tools.write_state_dump({
+    test_map = setup
+  }, "test-map", player_index)
+
+  return setup
+end
+
 function manager.register_commands()
   commands.add_command("babp-recheck", { "babp-command-help.recheck" }, function(command)
     local surface_name, force_name = util.parse_scope_args(command.parameter)
@@ -600,6 +619,25 @@ function manager.register_commands()
       util.position_key(setup.origin)
     })
   end)
+
+  commands.add_command("babp-testmap-setup", { "babp-command-help.testmap-setup" }, function(command)
+    local setup = manager.test_map_setup(command.player_index)
+    if command.player_index ~= nil then
+      util.print_to_player(command.player_index, {
+        "babp-message.testmap-ready-player",
+        setup.surface_name,
+        util.position_key(setup.origin),
+        setup.summary_file
+      })
+    else
+      util.print_to_player(command.player_index, {
+        "babp-message.testmap-ready-console",
+        setup.surface_name,
+        util.position_key(setup.origin),
+        setup.summary_file
+      })
+    end
+  end)
 end
 
 function manager.remote_interface()
@@ -615,6 +653,9 @@ function manager.remote_interface()
     end,
     smoke_setup = function(player_index)
       return manager.smoke_setup(player_index)
+    end,
+    test_map_setup = function(player_index)
+      return manager.test_map_setup(player_index)
     end
   }
 end
