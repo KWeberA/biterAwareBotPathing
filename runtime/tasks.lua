@@ -30,16 +30,17 @@ local function make_ghost_key(kind, surface_index, force_name, position, inner_n
 end
 
 local function make_mark_key(kind, surface_index, force_name, entity, target_name, target_quality_name)
+  local resolved_force_name = util.force_name(force_name) or tostring(force_name)
   local identity = entity.unit_number ~= nil and ("u:" .. entity.unit_number)
     or ("p:" .. util.position_key(entity.position) .. ":" .. entity.name)
 
   return table.concat({
     kind,
     surface_index,
-    force_name,
+    resolved_force_name,
     identity,
-    target_name or "none",
-    target_quality_name or "normal"
+    util.named_object_name(target_name) or target_name or "none",
+    util.quality_name(target_quality_name) or target_quality_name or "normal"
   }, ":")
 end
 
@@ -222,7 +223,7 @@ local function serialize_marked_entity(entity, kind, force_name, player_index, t
   local snapshot = {
     kind = kind,
     surface_index = entity.surface.index,
-    force_name = force_name,
+    force_name = util.force_name(force_name) or force_name,
     position = util.copy_position(entity.position),
     entity_name = entity.name,
     entity_quality_name = util.quality_name(entity.quality),
@@ -268,8 +269,8 @@ local function build_live_ghost_candidate(root, entity)
 end
 
 local function build_live_mark_candidate(root, entity, kind, force, player_index, target, quality)
-  local force_name = type(force) == "table" and force.name or force
-  local target_name = target and target.name or nil
+  local force_name = util.force_name(force) or force
+  local target_name = util.named_object_name(target)
   local target_quality_name = util.quality_name(quality)
   local key = make_mark_key(kind, entity.surface.index, force_name, entity, target_name, target_quality_name)
   local deferred_task_id = root.deferred_task_keys[key]
@@ -813,8 +814,8 @@ function tasks.cancel_deferred_mark(root, force, entity, kind, target, quality)
     return false
   end
 
-  local force_name = type(force) == "table" and force.name or force
-  local target_name = target and target.name or nil
+  local force_name = util.force_name(force) or force
+  local target_name = util.named_object_name(target)
   local target_quality_name = util.quality_name(quality)
   local key = make_mark_key(kind, entity.surface.index, force_name, entity, target_name, target_quality_name)
   local task_id = root.deferred_task_keys[key]

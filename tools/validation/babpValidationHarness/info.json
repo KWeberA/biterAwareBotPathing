@@ -1,0 +1,14 @@
+{
+  "name": "babpValidationHarness",
+  "version": "0.0.1",
+  "title": "BABP Validation Harness",
+  "author": "Codex",
+  "factorio_version": "2.0",
+  "dependencies": [
+    "base >= 2.0",
+    "? elevated-rails",
+    "? quality",
+    "? space-age",
+    "biterAwareBotPathing >= 0.2.0"
+  ]
+}

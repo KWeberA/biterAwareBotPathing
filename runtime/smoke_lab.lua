@@ -2,6 +2,8 @@ local constants = require("runtime.constants")
 local util = require("runtime.util")
 
 local smoke_lab = {}
+local require_valid_entity
+local create_required_entity
 
 local function create_entity(surface, params)
   local entity = surface.create_entity(params)
@@ -32,29 +34,29 @@ end
 local function create_power_block(surface, force, origin)
   local created = {}
 
-  created[#created + 1] = create_entity(surface, {
+  created[#created + 1] = create_required_entity(surface, {
     name = "substation",
     position = { x = origin.x - 4, y = origin.y - 4 },
     force = force,
     raise_built = true
-  })
+  }, "substation")
 
   for x = -12, -4, 4 do
-    created[#created + 1] = create_entity(surface, {
+    created[#created + 1] = create_required_entity(surface, {
       name = "solar-panel",
       position = { x = origin.x + x, y = origin.y - 14 },
       force = force,
       raise_built = true
-    })
+    }, "solar-panel")
   end
 
   for y = -10, -2, 4 do
-    local accumulator = create_entity(surface, {
+    local accumulator = create_required_entity(surface, {
       name = "accumulator",
       position = { x = origin.x - 14, y = origin.y + y },
       force = force,
       raise_built = true
-    })
+    }, "accumulator")
 
     if accumulator ~= nil and accumulator.valid then
       accumulator.energy = accumulator.electric_buffer_size
@@ -82,12 +84,12 @@ local function create_power_links(surface, force, origin)
   }
 
   for _, position in ipairs(pole_positions) do
-    create_entity(surface, {
+    create_required_entity(surface, {
       name = "medium-electric-pole",
       position = position,
       force = force,
       raise_built = true
-    })
+    }, "medium-electric-pole")
   end
 end
 
@@ -106,12 +108,53 @@ local function create_roboport(surface, force, position)
   return roboport
 end
 
-local function require_valid_entity(entity, entity_name, position)
+require_valid_entity = function(entity, entity_name, position)
   if entity == nil or not entity.valid then
     error(entity_name .. " could not be created at " .. util.position_key(position))
   end
 
   return entity
+end
+
+create_required_entity = function(surface, params, entity_name)
+  return require_valid_entity(
+    create_entity(surface, params),
+    entity_name or params.name,
+    params.position
+  )
+end
+
+local function create_or_reuse_wall(surface, force, position)
+  local existing = surface.find_entities_filtered {
+    position = position,
+    force = util.force_name(force) or force,
+    name = "stone-wall",
+    limit = 1
+  }[1]
+
+  if existing ~= nil and existing.valid then
+    return existing
+  end
+
+  if not surface.can_place_entity {
+    name = "stone-wall",
+    position = position,
+    force = force
+  } then
+    local blockers = {}
+    for _, entity in ipairs(surface.find_entities_filtered { position = position }) do
+      blockers[#blockers + 1] = entity.name .. "@" .. util.position_key(entity.position)
+    end
+
+    error("stone-wall could not be placed at " .. util.position_key(position) .. " because of " .. table.concat(blockers, ", "))
+  end
+
+  return create_required_entity(surface, {
+    name = "stone-wall",
+    position = position,
+    force = force,
+    raise_built = true
+  }, "stone-wall")
 end
 
 local function create_wall_line(surface, force, from_position, to_position)
@@ -120,12 +163,7 @@ local function create_wall_line(surface, force, from_position, to_position)
     local end_y = math.max(from_position.y, to_position.y)
 
     for y = start_y, end_y do
-      create_entity(surface, {
-        name = "stone-wall",
-        position = { x = from_position.x, y = y },
-        force = force,
-        raise_built = true
-      })
+      create_or_reuse_wall(surface, force, { x = from_position.x, y = y })
     end
 
     return
@@ -134,29 +172,24 @@ local function create_wall_line(surface, force, from_position, to_position)
   local start_x = math.min(from_position.x, to_position.x)
   local end_x = math.max(from_position.x, to_position.x)
   for x = start_x, end_x do
-    create_entity(surface, {
-      name = "stone-wall",
-      position = { x = x, y = from_position.y },
-      force = force,
-      raise_built = true
-    })
+    create_or_reuse_wall(surface, force, { x = x, y = from_position.y })
   end
 end
 
 local function create_provider_setup(surface, force, origin)
-  local pole = create_entity(surface, {
+  local pole = create_required_entity(surface, {
     name = "medium-electric-pole",
     position = { x = origin.x + 3, y = origin.y + 2 },
     force = force,
     raise_built = true
-  })
+  }, "medium-electric-pole")
 
-  local provider = create_entity(surface, {
-    name = "logistic-chest-passive-provider",
+  local provider = create_required_entity(surface, {
+    name = "passive-provider-chest",
     position = { x = origin.x + 6, y = origin.y + 2 },
     force = force,
     raise_built = true
-  })
+  }, "passive-provider-chest")
 
   fill(provider, "construction-robot", 60)
   fill(provider, "stone-wall", 200)
@@ -177,71 +210,71 @@ local function create_enemy_ring(surface, origin)
   }
 
   for _, threat in ipairs(threats) do
-    create_entity(surface, {
+    create_required_entity(surface, {
       name = threat.name,
       position = threat.position,
       force = enemy_force,
       raise_built = true
-    })
+    }, threat.name)
   end
 end
 
 local function create_smoke_targets(surface, force, origin)
-  surface.create_entity {
+  require_valid_entity(surface.create_entity {
     name = "entity-ghost",
     inner_name = "stone-wall",
     position = { x = origin.x + 8, y = origin.y + 8 },
     force = force,
     raise_built = true
-  }
+  }, "stone-wall ghost", { x = origin.x + 8, y = origin.y + 8 })
 
-  surface.create_entity {
+  require_valid_entity(surface.create_entity {
     name = "entity-ghost",
     inner_name = "steel-chest",
     position = { x = origin.x + 10, y = origin.y + 42 },
     force = force,
     raise_built = true
-  }
+  }, "steel-chest ghost", { x = origin.x + 10, y = origin.y + 42 })
 
-  surface.create_entity {
+  require_valid_entity(surface.create_entity {
     name = "entity-ghost",
     inner_name = "steel-chest",
     position = { x = origin.x + 42, y = origin.y + 42 },
     force = force,
     raise_built = true
-  }
+  }, "steel-chest ghost", { x = origin.x + 42, y = origin.y + 42 })
 
-  surface.create_entity {
+  require_valid_entity(surface.create_entity {
     name = "entity-ghost",
     inner_name = "radar",
     position = { x = origin.x + 76, y = origin.y + 48 },
     force = force,
     raise_built = true
-  }
+  }, "radar ghost", { x = origin.x + 76, y = origin.y + 48 })
 
-  surface.create_entity {
+  require_valid_entity(surface.create_entity {
     name = "tile-ghost",
     inner_name = "stone-path",
     position = { x = origin.x + 11, y = origin.y + 43 },
     force = force,
     raise_built = true
-  }
+  }, "stone-path ghost", { x = origin.x + 11, y = origin.y + 43 })
 end
 
 local function create_marked_targets(surface, force, origin)
-  local wall = create_entity(surface, {
+  local wall = create_required_entity(surface, {
     name = "stone-wall",
     position = { x = origin.x + 72, y = origin.y + 50 },
     force = force,
     raise_built = true
-  })
+  }, "stone-wall")
 
-  local belt = create_entity(surface, {
+  local belt = create_required_entity(surface, {
     name = "transport-belt",
     position = { x = origin.x + 70, y = origin.y + 46 },
     force = force,
     raise_built = true
-  })
+  }, "transport-belt")
 
   if wall ~= nil and wall.valid then
     wall.order_deconstruction(force)
@@ -356,22 +389,22 @@ local function pave_test_map(surface, corner, leg_length, arm_half_width, clear_
 end
 
 local function create_test_map_power(surface, force, corner, leg_length)
-  create_entity(surface, {
+  create_required_entity(surface, {
     name = "substation",
     position = { x = corner.x - 12, y = corner.y - 12 },
     force = force,
     raise_built = true
-  })
+  }, "substation")
 
   for x = corner.x - 24, corner.x - 4, 4 do
     for y = corner.y - 24, corner.y - 4, 4 do
       if not (x == corner.x - 12 and y == corner.y - 12) then
-        create_entity(surface, {
+        create_required_entity(surface, {
           name = "solar-panel",
           position = { x = x, y = y },
           force = force,
           raise_built = true
-        })
+        }, "solar-panel")
       end
     end
   end
@@ -381,12 +414,12 @@ local function create_test_map_power(surface, force, corner, leg_length)
     { x = corner.x - 12, y = corner.y - 20 },
     { x = corner.x - 20, y = corner.y - 20 }
   }) do
-    local accumulator = create_entity(surface, {
+    local accumulator = create_required_entity(surface, {
       name = "accumulator",
       position = position,
       force = force,
       raise_built = true
-    })
+    }, "accumulator")
 
     if accumulator ~= nil and accumulator.valid then
       accumulator.energy = accumulator.electric_buffer_size
@@ -394,21 +427,21 @@ local function create_test_map_power(surface, force, corner, leg_length)
   end
 
   for x = corner.x - 4, corner.x + leg_length, 9 do
-    create_entity(surface, {
+    create_required_entity(surface, {
       name = "medium-electric-pole",
       position = { x = x, y = corner.y - 4 },
       force = force,
       raise_built = true
-    })
+    }, "medium-electric-pole")
   end
 
   for y = corner.y + 5, corner.y + leg_length, 9 do
-    create_entity(surface, {
+    create_required_entity(surface, {
       name = "medium-electric-pole",
       position = { x = corner.x - 4, y = y },
       force = force,
       raise_built = true
-    })
+    }, "medium-electric-pole")
   end
 end
 
@@ -489,12 +522,12 @@ local function create_diagonal_threats(surface, corner)
     { x = corner.x + 102, y = corner.y + 48 },
     { x = corner.x + 126, y = corner.y + 24 }
   }) do
-    nests[#nests + 1] = create_entity(surface, {
+    nests[#nests + 1] = create_required_entity(surface, {
       name = "biter-spawner",
       position = position,
       force = enemy_force,
       raise_built = true
-    })
+    }, "biter-spawner")
   end
 
   for _, position in ipairs({
@@ -502,12 +535,12 @@ local function create_diagonal_threats(surface, corner)
     { x = corner.x + 75, y = corner.y + 90 },
     { x = corner.x + 118, y = corner.y + 40 }
   }) do
-    worms[#worms + 1] = create_entity(surface, {
+    worms[#worms + 1] = create_required_entity(surface, {
       name = "medium-worm-turret",
       position = position,
       force = enemy_force,
       raise_built = true
-    })
+    }, "medium-worm-turret")
   end
 
   for _, position in ipairs({
@@ -518,12 +551,12 @@ local function create_diagonal_threats(surface, corner)
     { x = corner.x + 84, y = corner.y + 64 },
     { x = corner.x + 84, y = corner.y + 72 }
   }) do
-    spitters[#spitters + 1] = create_entity(surface, {
+    spitters[#spitters + 1] = create_required_entity(surface, {
       name = "medium-spitter",
       position = position,
       force = enemy_force,
       raise_built = true
-    })
+    }, "medium-spitter")
   end
 
   return nests, worms, spitters
@@ -570,6 +603,30 @@ local function clear_test_map_metadata(root, surface_index)
   end
 end
 
+local function try_teleport_player_to_test_map(player, surface, corner)
+  if player == nil then
+    return false, nil
+  end
+
+  local target_position = surface.find_non_colliding_position(
+    "character",
+    { x = corner.x + 8, y = corner.y - 8 },
+    16,
+    0.5,
+    true
+  )
+
+  if target_position == nil then
+    return false, "no-safe-position"
+  end
+
+  if not player.teleport(target_position, surface) then
+    return false, "teleport-failed"
+  end
+
+  return true, nil
+end
+
 function smoke_lab.setup(root, player_index)
   local player = find_player(player_index)
   local surface = player and player.valid and player.surface or game.surfaces[1]
@@ -590,7 +647,11 @@ function smoke_lab.setup(root, player_index)
   }
 
   for index, position in ipairs(roboport_positions) do
-    local roboport = create_roboport(surface, force, position)
+    local roboport = require_valid_entity(
+      create_roboport(surface, force, position),
+      "roboport",
+      position
+    )
     if index == 1 then
       fill(roboport, "construction-robot", 50)
     end
@@ -626,15 +687,16 @@ function smoke_lab.setup_test_map(root, player_index)
   local force = player and player.force or game.forces.player
   local surface = ensure_test_map_surface()
   local corner = { x = 32, y = 32 }
+  local teleported = false
+  local teleport_warning = nil
+
+  clear_test_map_metadata(root, surface.index)
 
   local area = run_setup_step("pave surface", function()
     return pave_test_map(surface, corner, leg_length, arm_half_width, clear_padding)
   end)
   run_setup_step("place power", function()
     create_test_map_power(surface, force, corner, leg_length)
-  end)
-  run_setup_step("place walls", function()
-    create_test_map_walls(surface, force, corner, leg_length, arm_half_width)
   end)
 
   local roboports = run_setup_step("place roboports", function()
@@ -655,18 +717,8 @@ function smoke_lab.setup_test_map(root, player_index)
   end)
 
   if player ~= nil then
-    run_setup_step("teleport player", function()
-      local target_position = surface.find_non_colliding_position(
-        "character",
-        { x = corner.x + 8, y = corner.y - 8 },
-        16,
-        0.5,
-        true
-      )
-
-      if target_position == nil or not player.teleport(target_position, surface) then
-        error("could not teleport player to the rebuilt test map")
-      end
+    teleported, teleport_warning = run_setup_step("teleport player", function()
+      return try_teleport_player_to_test_map(player, surface, corner)
     end)
   end
 
@@ -697,6 +749,8 @@ function smoke_lab.setup_test_map(root, player_index)
     leg_length = leg_length,
     roboport_spacing = roboport_spacing,
     right_arm_outer_roboport = util.copy_position(rightmost_roboport.position),
+    teleported = teleported,
+    teleport_warning = teleport_warning,
     counts = {
       roboports = count_valid(roboports),
       biter_spawners = count_valid(nests),

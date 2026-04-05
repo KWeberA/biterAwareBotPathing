@@ -623,8 +623,10 @@ function manager.register_commands()
   commands.add_command("babp-testmap-setup", { "babp-command-help.testmap-setup" }, function(command)
     local setup = manager.test_map_setup(command.player_index)
     if command.player_index ~= nil then
+      local message_key = setup.teleported and "babp-message.testmap-ready-player"
+        or "babp-message.testmap-ready-player-warning"
       util.print_to_player(command.player_index, {
-        "babp-message.testmap-ready-player",
+        message_key,
         setup.surface_name,
         util.position_key(setup.origin),
         setup.summary_file

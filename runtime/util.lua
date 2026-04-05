@@ -59,16 +59,32 @@ function util.copy_position(position)
   return { x = position.x, y = position.y }
 end
 
-function util.quality_name(quality)
-  if quality == nil then
+function util.named_object_name(value)
+  if value == nil then
     return nil
   end
 
-  if type(quality) == "string" then
-    return quality
+  if type(value) == "string" then
+    return value
   end
 
-  return quality.name
+  local ok, name = pcall(function()
+    return value.name
+  end)
+
+  if ok and type(name) == "string" then
+    return name
+  end
+
+  return nil
+end
+
+function util.force_name(force)
+  return util.named_object_name(force)
+end
+
+function util.quality_name(quality)
+  return util.named_object_name(quality)
 end
 
 function util.copy_value(value)

@@ -3,6 +3,7 @@
 *.tmp
 *.bak
 .factorio-test/
+.factorio-validation/
 script-output/
 factorio-current.log
 factorio-previous.log
