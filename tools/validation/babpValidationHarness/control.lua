@@ -12,6 +12,24 @@ local function require_entity(entity, label)
   return entity
 end
 
+local function destroy_entities_at(surface, position)
+  for _, entity in ipairs(surface.find_entities_filtered { position = position }) do
+    if entity.valid then
+      entity.destroy { raise_destroy = true }
+    end
+  end
+end
+
+local function create_live_ghost(surface, force, inner_name, position)
+  return surface.create_entity {
+    name = "entity-ghost",
+    inner_name = inner_name,
+    position = position,
+    force = force,
+    raise_built = true
+  }
+end
+
 local function validate_test_map(summary, run_index)
   if summary == nil then
     fail("test_map_setup returned nil on run " .. run_index)
@@ -48,8 +66,7 @@ local function validate_test_map(summary, run_index)
   end
 end
 
-local function run_mark_path_validation()
-  local summary = remote.call(MOD_NAME, "smoke_setup")
+local function run_live_path_validation(summary)
   if summary == nil then
     fail("smoke_setup returned nil")
   end
@@ -69,47 +86,120 @@ local function run_mark_path_validation()
     technology.researched = true
   end
 
-  local wall_position = {
-    x = summary.origin.x + 60,
-    y = summary.origin.y + 52
+  local safe_build_position = {
+    x = summary.origin.x + 8,
+    y = summary.origin.y + 8
   }
-  local belt_position = {
-    x = summary.origin.x + 60,
+  local unsafe_build_position = {
+    x = summary.origin.x + 76,
     y = summary.origin.y + 48
   }
+  local unsafe_deconstruction_position = {
+    x = summary.origin.x + 72,
+    y = summary.origin.y + 50
+  }
 
+  local resolved_safe_build_position = surface.find_non_colliding_position(
+    "steel-chest",
+    safe_build_position,
+    16,
+    1,
+    true
+  )
+  if resolved_safe_build_position == nil then
+    fail("could not find a safe live build position near the seeded roboport")
+  end
+
+  safe_build_position = resolved_safe_build_position
+
+  destroy_entities_at(surface, safe_build_position)
+  local resolved_unsafe_build_position = surface.find_non_colliding_position(
+    "stone-wall",
+    unsafe_build_position,
+    8,
+    1,
+    true
+  )
+  if resolved_unsafe_build_position == nil then
+    fail("could not find an unsafe live build position near the threat ring")
+  end
+
+  unsafe_build_position = resolved_unsafe_build_position
+
+  destroy_entities_at(surface, unsafe_build_position)
+
+  local safe_ghost = create_live_ghost(surface, force, "stone-wall", safe_build_position)
+  if safe_ghost == nil then
+    fail("safe live build ghost could not be created")
+  end
+
+  if not safe_ghost.valid then
+    fail("safe live build ghost was unexpectedly deferred")
+  end
+
+  local unsafe_ghost = create_live_ghost(surface, force, "stone-wall", unsafe_build_position)
+  if unsafe_ghost ~= nil and unsafe_ghost.valid then
+    fail("unsafe live build ghost was not deferred")
+  end
+
+  local remaining_unsafe_ghost = surface.find_entities_filtered {
+    position = unsafe_build_position,
+    type = "entity-ghost",
+    force = force.name,
+    limit = 1
+  }[1]
+  if remaining_unsafe_ghost ~= nil and remaining_unsafe_ghost.valid then
+    fail("unsafe live build ghost is still present after defer")
+  end
+
+  local resolved_unsafe_deconstruction_position = surface.find_non_colliding_position(
+    "stone-wall",
+    unsafe_deconstruction_position,
+    8,
+    1,
+    true
+  )
+  if resolved_unsafe_deconstruction_position == nil then
+    fail("could not find an unsafe deconstruction position near the threat ring")
+  end
+
+  unsafe_deconstruction_position = resolved_unsafe_deconstruction_position
+
+  destroy_entities_at(surface, unsafe_deconstruction_position)
   local wall = require_entity(surface.create_entity {
     name = "stone-wall",
-    position = wall_position,
+    position = unsafe_deconstruction_position,
     force = force,
     raise_built = true
   }, "validation wall")
-  local belt = require_entity(surface.create_entity {
-    name = "transport-belt",
-    position = belt_position,
-    force = force,
-    raise_built = true
-  }, "validation belt")
 
-  wall.order_deconstruction(force)
-  belt.order_upgrade {
-    force = force,
-    target = { name = "fast-transport-belt" }
-  }
+  if not wall.order_deconstruction(force) then
+    fail("unsafe deconstruction target could not be marked")
+  end
+
+  if not wall.valid then
+    fail("unsafe deconstruction target was destroyed unexpectedly")
+  end
+
+  if wall.is_registered_for_deconstruction(force.name) then
+    fail("unsafe deconstruction target was not deferred")
+  end
 
   return {
     smoke_setup = summary,
-    deconstruction_order_called = true,
-    upgrade_order_called = true,
-    wall_position = wall_position,
-    belt_position = belt_position
+    safe_build_position = safe_build_position,
+    safe_build_kept_visible = true,
+    unsafe_build_position = unsafe_build_position,
+    unsafe_build_deferred = true,
+    unsafe_deconstruction_position = unsafe_deconstruction_position,
+    unsafe_deconstruction_deferred = true
   }
 end
 
 local function run_validation()
   local player_run_index = game.players[1] ~= nil and 1 or nil
   local result = {
-    smoke = run_mark_path_validation(),
+    smoke = run_live_path_validation(storage.validation.smoke_setup),
     test_map_runs = {
       remote.call(MOD_NAME, "test_map_setup"),
       remote.call(MOD_NAME, "test_map_setup", player_run_index)
@@ -133,13 +223,27 @@ end
 
 script.on_init(function()
   storage.validation = {
-    completed = false
+    completed = false,
+    stage = "build-smoke-lab",
+    wait_until_tick = nil,
+    smoke_setup = nil
   }
 end)
 
 script.on_nth_tick(1, function()
   if storage.validation ~= nil and storage.validation.completed then
     script.on_nth_tick(1, nil)
+    return
+  end
+
+  if storage.validation.stage == "build-smoke-lab" then
+    storage.validation.smoke_setup = remote.call(MOD_NAME, "smoke_setup")
+    storage.validation.stage = "run-validation"
+    storage.validation.wait_until_tick = game.tick + 1
+    return
+  end
+
+  if storage.validation.wait_until_tick ~= nil and game.tick < storage.validation.wait_until_tick then
     return
   end
 

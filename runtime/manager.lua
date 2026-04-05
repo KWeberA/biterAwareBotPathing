@@ -45,6 +45,25 @@ local function resolve_order_force(entity, player_index)
   return nil
 end
 
+local function capture_force_surface_scope(entity, force)
+  if entity == nil or not entity.valid then
+    return nil
+  end
+
+  local surface = entity.surface
+  local resolved_force = force or entity.force
+  if surface == nil or resolved_force == nil then
+    return nil
+  end
+
+  return {
+    surface = surface,
+    surface_index = surface.index,
+    force = resolved_force,
+    force_name = resolved_force.name
+  }
+end
+
 local function relevant_surface_force_pairs(root, surface_name, force_name)
   local result = {}
   local selected_surfaces = {}
@@ -384,12 +403,17 @@ function manager.on_built_entity(event)
   local root = prepare_root(util.ensure_root())
 
   if entity.type == "entity-ghost" or entity.type == "tile-ghost" then
+    local scope = capture_force_surface_scope(entity)
+    if scope == nil then
+      return
+    end
+
     with_mutation(function()
-      local context, threat = get_context(root, entity.force, entity.surface, false)
-      tasks.evaluate_live_ghost(root, entity.force, context, threat, entity)
+      local context, threat = get_context(root, scope.force, scope.surface, false)
+      tasks.evaluate_live_ghost(root, scope.force, context, threat, entity)
     end)
 
-    mark_force_surface_dirty(root, entity.surface.index, entity.force.name)
+    mark_force_surface_dirty(root, scope.surface_index, scope.force_name)
     return
   end
 
@@ -412,12 +436,17 @@ function manager.on_marked_for_deconstruction(event)
     return
   end
 
+  local scope = capture_force_surface_scope(entity, force)
+  if scope == nil then
+    return
+  end
+
   with_mutation(function()
-    local context, threat = get_context(root, force, entity.surface, false)
+    local context, threat = get_context(root, scope.force, scope.surface, false)
     tasks.evaluate_live_mark(root, force, context, threat, entity, "deconstruction", event.player_index)
   end)
 
-  mark_force_surface_dirty(root, entity.surface.index, force.name)
+  mark_force_surface_dirty(root, scope.surface_index, scope.force_name)
 end
 
 function manager.on_marked_for_upgrade(event)
@@ -436,12 +465,17 @@ function manager.on_marked_for_upgrade(event)
     return
   end
 
+  local scope = capture_force_surface_scope(entity, force)
+  if scope == nil then
+    return
+  end
+
   with_mutation(function()
-    local context, threat = get_context(root, force, entity.surface, false)
+    local context, threat = get_context(root, scope.force, scope.surface, false)
     tasks.evaluate_live_mark(root, force, context, threat, entity, "upgrade", event.player_index, event.target, event.quality)
   end)
 
-  mark_force_surface_dirty(root, entity.surface.index, force.name)
+  mark_force_surface_dirty(root, scope.surface_index, scope.force_name)
 end
 
 function manager.on_cancelled_deconstruction(event)
@@ -459,9 +493,14 @@ function manager.on_cancelled_deconstruction(event)
     return
   end
 
+  local scope = capture_force_surface_scope(entity, force)
+  if scope == nil then
+    return
+  end
+
   local root = prepare_root(util.ensure_root())
   tasks.cancel_deferred_mark(root, force, entity, "deconstruction")
-  mark_force_surface_dirty(root, entity.surface.index, force.name)
+  mark_force_surface_dirty(root, scope.surface_index, scope.force_name)
 end
 
 function manager.on_cancelled_upgrade(event)
@@ -479,9 +518,14 @@ function manager.on_cancelled_upgrade(event)
     return
   end
 
+  local scope = capture_force_surface_scope(entity, force)
+  if scope == nil then
+    return
+  end
+
   local root = prepare_root(util.ensure_root())
   tasks.cancel_deferred_mark(root, force, entity, "upgrade", event.target, event.quality)
-  mark_force_surface_dirty(root, entity.surface.index, force.name)
+  mark_force_surface_dirty(root, scope.surface_index, scope.force_name)
 end
 
 function manager.on_object_destroyed(event)
