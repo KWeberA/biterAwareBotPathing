@@ -188,7 +188,6 @@ function network_cache.build_context(root, force, surface, threat)
         if cache.bounds ~= nil and #cache.cells > 0 then
           context.networks[cache.network_key] = cache
           context.network_list[#context.network_list + 1] = cache
-          root.networks[cache.network_key] = cache
         end
       end
     end

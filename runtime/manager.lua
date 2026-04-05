@@ -10,7 +10,8 @@ local manager = {}
 
 local runtime = {
   mutation_depth = 0,
-  contexts = {}
+  contexts = {},
+  needs_transient_rebuild = false
 }
 
 local function with_mutation(work)
@@ -27,6 +28,21 @@ end
 
 local function relevant_force(force)
   return force.name ~= "enemy" and force.name ~= "neutral"
+end
+
+local function resolve_order_force(entity, player_index)
+  if entity ~= nil and entity.valid and entity.force ~= nil and relevant_force(entity.force) then
+    return entity.force
+  end
+
+  if player_index ~= nil then
+    local player = game.get_player(player_index)
+    if player ~= nil and player.valid and relevant_force(player.force) then
+      return player.force
+    end
+  end
+
+  return nil
 end
 
 local function relevant_surface_force_pairs(root, surface_name, force_name)
@@ -141,9 +157,40 @@ local function refresh_activity(root, force_surface_key)
   end
 end
 
+local function prepare_root(root)
+  if not runtime.needs_transient_rebuild then
+    return root
+  end
+
+  root.threat_indexes = {}
+  root.networks = {}
+  root.object_registrations = {}
+  runtime.contexts = {}
+  tasks.rebuild_indexes(root)
+
+  for _, surface in pairs(game.surfaces) do
+    root.dirty_surfaces[surface.index] = true
+  end
+
+  for key in pairs(root.active_force_surfaces) do
+    root.dirty_force_surfaces[key] = true
+    root.full_rescan_force_surfaces[key] = true
+  end
+
+  runtime.needs_transient_rebuild = false
+  return root
+end
+
 local function recheck_force_surface(root, force, surface, force_refresh)
-  local context, threat = get_context(root, force, surface, force_refresh)
-  local summary = tasks.recheck_force_surface(root, force, surface, context, threat)
+  local context = nil
+  local threat = nil
+  local summary = nil
+
+  with_mutation(function()
+    context, threat = get_context(root, force, surface, force_refresh)
+    summary = tasks.recheck_force_surface(root, force, surface, context, threat)
+  end)
+
   local force_surface_key = util.force_surface_key(surface.index, force.name)
   root.full_rescan_force_surfaces[force_surface_key] = nil
   refresh_activity(root, force_surface_key)
@@ -211,7 +258,11 @@ end
 
 function manager.on_init()
   local root = util.ensure_root()
+  root.threat_indexes = {}
+  root.networks = {}
+  root.object_registrations = {}
   tasks.rebuild_indexes(root)
+  runtime.needs_transient_rebuild = false
 
   for _, surface in pairs(game.surfaces) do
     root.dirty_surfaces[surface.index] = true
@@ -238,12 +289,17 @@ end
 function manager.on_load()
   runtime.mutation_depth = 0
   runtime.contexts = {}
+  runtime.needs_transient_rebuild = true
 end
 
 function manager.on_configuration_changed()
   local root = util.ensure_root()
+  root.threat_indexes = {}
+  root.networks = {}
+  root.object_registrations = {}
   tasks.rebuild_indexes(root)
   runtime.contexts = {}
+  runtime.needs_transient_rebuild = false
 
   for _, surface in pairs(game.surfaces) do
     root.dirty_surfaces[surface.index] = true
@@ -258,7 +314,7 @@ function manager.on_configuration_changed()
 end
 
 function manager.on_nth_tick()
-  local root = util.ensure_root()
+  local root = prepare_root(util.ensure_root())
   local processed = 0
   local dirty_keys = {}
   local processed_keys = {}
@@ -275,7 +331,7 @@ function manager.on_nth_tick()
     local force = game.forces[force_name]
 
     if surface ~= nil and force ~= nil then
-      recheck_force_surface(root, force, surface, true)
+      recheck_force_surface(root, force, surface, false)
       processed = processed + 1
       processed_keys[key] = true
     else
@@ -302,7 +358,7 @@ function manager.on_nth_tick()
       local force = game.forces[force_name]
 
       if surface ~= nil and force ~= nil then
-        recheck_force_surface(root, force, surface, true)
+        recheck_force_surface(root, force, surface, false)
         processed = processed + 1
       else
         root.active_force_surfaces[key] = nil
@@ -325,11 +381,11 @@ function manager.on_built_entity(event)
     return
   end
 
-  local root = util.ensure_root()
+  local root = prepare_root(util.ensure_root())
 
   if entity.type == "entity-ghost" or entity.type == "tile-ghost" then
     with_mutation(function()
-      local context, threat = get_context(root, entity.force, entity.surface, true)
+      local context, threat = get_context(root, entity.force, entity.surface, false)
       tasks.evaluate_live_ghost(root, entity.force, context, threat, entity)
     end)
 
@@ -350,13 +406,18 @@ function manager.on_marked_for_deconstruction(event)
     return
   end
 
-  local root = util.ensure_root()
+  local root = prepare_root(util.ensure_root())
+  local force = resolve_order_force(entity, event.player_index)
+  if force == nil then
+    return
+  end
+
   with_mutation(function()
-    local context, threat = get_context(root, entity.force, entity.surface, true)
-    tasks.evaluate_live_mark(root, entity.force, context, threat, entity, "deconstruction", event.player_index)
+    local context, threat = get_context(root, force, entity.surface, false)
+    tasks.evaluate_live_mark(root, force, context, threat, entity, "deconstruction", event.player_index)
   end)
 
-  mark_force_surface_dirty(root, entity.surface.index, entity.force.name)
+  mark_force_surface_dirty(root, entity.surface.index, force.name)
 end
 
 function manager.on_marked_for_upgrade(event)
@@ -369,17 +430,62 @@ function manager.on_marked_for_upgrade(event)
     return
   end
 
-  local root = util.ensure_root()
+  local root = prepare_root(util.ensure_root())
+  local force = resolve_order_force(entity, event.player_index)
+  if force == nil then
+    return
+  end
+
   with_mutation(function()
-    local context, threat = get_context(root, entity.force, entity.surface, true)
-    tasks.evaluate_live_mark(root, entity.force, context, threat, entity, "upgrade", event.player_index, event.target, event.quality)
+    local context, threat = get_context(root, force, entity.surface, false)
+    tasks.evaluate_live_mark(root, force, context, threat, entity, "upgrade", event.player_index, event.target, event.quality)
   end)
 
-  mark_force_surface_dirty(root, entity.surface.index, entity.force.name)
+  mark_force_surface_dirty(root, entity.surface.index, force.name)
+end
+
+function manager.on_cancelled_deconstruction(event)
+  if runtime.mutation_depth > 0 then
+    return
+  end
+
+  local entity = event.entity
+  if entity == nil or not entity.valid then
+    return
+  end
+
+  local force = resolve_order_force(entity, event.player_index)
+  if force == nil then
+    return
+  end
+
+  local root = prepare_root(util.ensure_root())
+  tasks.cancel_deferred_mark(root, force, entity, "deconstruction")
+  mark_force_surface_dirty(root, entity.surface.index, force.name)
+end
+
+function manager.on_cancelled_upgrade(event)
+  if runtime.mutation_depth > 0 then
+    return
+  end
+
+  local entity = event.entity
+  if entity == nil or not entity.valid then
+    return
+  end
+
+  local force = resolve_order_force(entity, event.player_index)
+  if force == nil then
+    return
+  end
+
+  local root = prepare_root(util.ensure_root())
+  tasks.cancel_deferred_mark(root, force, entity, "upgrade", event.target, event.quality)
+  mark_force_surface_dirty(root, entity.surface.index, force.name)
 end
 
 function manager.on_object_destroyed(event)
-  local root = util.ensure_root()
+  local root = prepare_root(util.ensure_root())
   tasks.handle_object_destroyed(root, event.registration_number)
 end
 
@@ -393,17 +499,17 @@ function manager.on_entity_removed(event)
     return
   end
 
-  local root = util.ensure_root()
+  local root = prepare_root(util.ensure_root())
   record_entity_change(root, entity)
 end
 
 function manager.on_biter_base_built(event)
-  local root = util.ensure_root()
+  local root = prepare_root(util.ensure_root())
   mark_surface_dirty(root, event.entity.surface.index)
 end
 
 function manager.recheck(surface_name, force_name)
-  local root = util.ensure_root()
+  local root = prepare_root(util.ensure_root())
   local scope_pairs = relevant_surface_force_pairs(root, surface_name, force_name)
   local processed_scopes = 0
 
@@ -417,8 +523,28 @@ function manager.recheck(surface_name, force_name)
   }
 end
 
+function manager.clear_deferred(surface_name, force_name, area)
+  local root = prepare_root(util.ensure_root())
+  local surface = surface_name ~= nil and util.resolve_surface(surface_name) or nil
+  local force = force_name ~= nil and util.resolve_force(force_name) or nil
+  local cleared = tasks.clear_deferred(root, surface and surface.index or nil, force and force.name or nil, area)
+
+  if surface ~= nil and force ~= nil then
+    mark_force_surface_dirty(root, surface.index, force.name)
+  else
+    for key in pairs(root.active_force_surfaces) do
+      root.dirty_force_surfaces[key] = true
+      invalidate_context(key)
+    end
+  end
+
+  return {
+    cleared = cleared
+  }
+end
+
 function manager.dump_state(surface_name, force_name, area, player_index)
-  local root = util.ensure_root()
+  local root = prepare_root(util.ensure_root())
   local scope_pairs = relevant_surface_force_pairs(root, surface_name, force_name)
   local payload = dump_payload(root, scope_pairs, area)
 
@@ -434,7 +560,7 @@ function manager.dump_state(surface_name, force_name, area, player_index)
 end
 
 function manager.smoke_setup(player_index)
-  local root = util.ensure_root()
+  local root = prepare_root(util.ensure_root())
   local setup = with_mutation(function()
     return smoke_lab.setup(root, player_index)
   end)
@@ -460,6 +586,12 @@ function manager.register_commands()
     util.print_to_player(command.player_index, { "babp-message.dump-written", filename })
   end)
 
+  commands.add_command("babp-clear-deferred", { "babp-command-help.clear-deferred" }, function(command)
+    local surface_name, force_name = util.parse_scope_args(command.parameter)
+    local result = manager.clear_deferred(surface_name, force_name)
+    util.print_to_player(command.player_index, { "babp-message.clear-deferred-finished", result.cleared })
+  end)
+
   commands.add_command("babp-smoke-setup", { "babp-command-help.smoke-setup" }, function(command)
     local setup = manager.smoke_setup(command.player_index)
     util.print_to_player(command.player_index, {
@@ -477,6 +609,9 @@ function manager.remote_interface()
     end,
     dump_state = function(surface_name, force_name, area)
       return manager.dump_state(surface_name, force_name, area)
+    end,
+    clear_deferred = function(surface_name, force_name, area)
+      return manager.clear_deferred(surface_name, force_name, area)
     end,
     smoke_setup = function(player_index)
       return manager.smoke_setup(player_index)

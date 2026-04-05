@@ -92,8 +92,6 @@ local function upsert_watch(root, entity)
 
     root.watch_ghosts[key] = watch
     adjust_count(root.watch_counts_by_force_surface, util.force_surface_key(entity.surface.index, entity.force.name), 1)
-  else
-    clear_registration(root, watch.registration_number)
   end
 
   watch.position = util.copy_position(entity.position)
@@ -101,10 +99,20 @@ local function upsert_watch(root, entity)
   watch.direction = entity.direction
   watch.quality_name = util.quality_name(entity.quality)
   watch.live_entity_unit_number = entity.unit_number
-  watch.registration_number = register_object(root, entity, {
-    kind = "watch",
-    key = key
-  })
+  local target_identity = util.entity_identity(entity)
+
+  if watch.registration_number == nil
+    or watch.target_identity ~= target_identity
+    or root.object_registrations[watch.registration_number] == nil
+  then
+    clear_registration(root, watch.registration_number)
+    watch.registration_number = register_object(root, entity, {
+      kind = "watch",
+      key = key
+    })
+  end
+
+  watch.target_identity = target_identity
 
   return watch
 end
@@ -142,8 +150,6 @@ local function upsert_deferred_task(root, key, snapshot, reason, network_key, ta
     root.deferred_tasks[next_id] = task
     root.deferred_task_keys[key] = next_id
     adjust_count(root.task_counts_by_force_surface, task_force_surface_key(task), 1)
-  else
-    clear_registration(root, task.registration_number)
   end
 
   task.snapshot = util.copy_value(snapshot)
@@ -151,57 +157,51 @@ local function upsert_deferred_task(root, key, snapshot, reason, network_key, ta
   task.network_key = network_key
   task.updated_tick = game.tick
   task.last_status = reason
-  task.registration_number = register_object(root, target_entity, {
-    kind = "task",
-    task_id = task.id
-  })
+  local target_identity = util.entity_identity(target_entity)
+
+  if target_entity == nil or target_identity == nil then
+    clear_registration(root, task.registration_number)
+    task.registration_number = nil
+    task.target_identity = nil
+  elseif task.registration_number == nil
+    or task.target_identity ~= target_identity
+    or root.object_registrations[task.registration_number] == nil
+  then
+    clear_registration(root, task.registration_number)
+    task.registration_number = register_object(root, target_entity, {
+      kind = "task",
+      task_id = task.id
+    })
+    task.target_identity = target_identity
+  end
 
   return task
 end
 
-local function module_request_plans(item_requests)
-  local plans = {}
+local function restore_item_requests(entity, snapshot)
+  if snapshot.insert_plan ~= nil then
+    entity.insert_plan = util.copy_value(snapshot.insert_plan)
+  end
 
-  for _, request in ipairs(item_requests or {}) do
-    local prototype = game.item_prototypes[request.name]
-    if prototype ~= nil and prototype.type == "module" and request.count > 0 then
-      plans[#plans + 1] = {
-        id = request.quality ~= nil and { name = request.name, quality = request.quality } or request.name,
-        items = { grid_count = request.count }
+  if snapshot.removal_plan ~= nil then
+    local proxy = entity.item_request_proxy
+    if proxy == nil or not proxy.valid then
+      proxy = entity.surface.create_entity {
+        name = "item-request-proxy",
+        target = entity,
+        modules = util.copy_value(snapshot.insert_plan or {})
       }
     end
-  end
 
-  return plans
-end
-
-local function has_unsupported_item_requests(snapshot)
-  for _, request in ipairs(snapshot.item_requests or {}) do
-    local prototype = game.item_prototypes[request.name]
-    if prototype ~= nil and prototype.type ~= "module" and request.count > 0 then
-      return true
+    if proxy ~= nil and proxy.valid then
+      proxy.removal_plan = util.copy_value(snapshot.removal_plan)
     end
   end
-
-  return false
-end
-
-local function restore_item_requests(entity, snapshot)
-  local plans = module_request_plans(snapshot.item_requests)
-  if #plans == 0 then
-    return
-  end
-
-  entity.surface.create_entity {
-    name = "item-request-proxy",
-    target = entity,
-    modules = plans,
-    force = entity.force,
-    raise_built = true
-  }
 end
 
 local function serialize_live_ghost(entity)
+  local proxy = entity.type == "entity-ghost" and entity.item_request_proxy or nil
+
   return {
     kind = entity.type,
     surface_index = entity.surface.index,
@@ -212,15 +212,17 @@ local function serialize_live_ghost(entity)
     quality_name = util.quality_name(entity.quality),
     tags = entity.type == "entity-ghost" and util.copy_value(entity.tags) or nil,
     item_requests = entity.type == "entity-ghost" and util.copy_item_requests(entity.item_requests) or {},
+    insert_plan = entity.type == "entity-ghost" and util.copy_value(entity.insert_plan) or nil,
+    removal_plan = proxy ~= nil and proxy.valid and util.copy_value(proxy.removal_plan) or nil,
     source_unit_number = entity.unit_number
   }
 end
 
-local function serialize_marked_entity(entity, kind, player_index, target, quality)
+local function serialize_marked_entity(entity, kind, force_name, player_index, target, quality)
   local snapshot = {
     kind = kind,
     surface_index = entity.surface.index,
-    force_name = entity.force.name,
+    force_name = force_name,
     position = util.copy_position(entity.position),
     entity_name = entity.name,
     entity_quality_name = util.quality_name(entity.quality),
@@ -265,10 +267,11 @@ local function build_live_ghost_candidate(root, entity)
   }
 end
 
-local function build_live_mark_candidate(root, entity, kind, player_index, target, quality)
+local function build_live_mark_candidate(root, entity, kind, force, player_index, target, quality)
+  local force_name = type(force) == "table" and force.name or force
   local target_name = target and target.name or nil
   local target_quality_name = util.quality_name(quality)
-  local key = make_mark_key(kind, entity.surface.index, entity.force.name, entity, target_name, target_quality_name)
+  local key = make_mark_key(kind, entity.surface.index, force_name, entity, target_name, target_quality_name)
   local deferred_task_id = root.deferred_task_keys[key]
 
   return {
@@ -276,6 +279,7 @@ local function build_live_mark_candidate(root, entity, kind, player_index, targe
     kind = kind,
     position = util.copy_position(entity.position),
     live_entity = entity,
+    force_name = force_name,
     player_index = player_index,
     target = target,
     quality = quality,
@@ -342,12 +346,15 @@ end
 local function reapply_mark(snapshot)
   local entity = resolve_mark_target(snapshot)
   if entity == nil or not entity.valid then
-    return nil
+    return nil, "target_missing"
   end
 
   if snapshot.kind == "deconstruction" then
-    entity.order_deconstruction(snapshot.force_name, snapshot.player_index)
-    return entity
+    if entity.order_deconstruction(snapshot.force_name, snapshot.player_index) then
+      return entity, "reapplied"
+    end
+
+    return entity, "reapply_failed"
   end
 
   if snapshot.kind == "upgrade" and snapshot.target_name ~= nil then
@@ -355,32 +362,34 @@ local function reapply_mark(snapshot)
       and { name = snapshot.target_name, quality = snapshot.target_quality_name }
       or { name = snapshot.target_name }
 
-    entity.order_upgrade {
+    if entity.order_upgrade {
       force = snapshot.force_name,
       target = target,
       player = snapshot.player_index
-    }
+    } then
+      return entity, "reapplied"
+    end
 
-    return entity
+    return entity, "reapply_failed"
   end
 
-  return nil
+  return nil, "target_missing"
 end
 
 local function cancel_mark(candidate)
   if candidate.kind == "deconstruction" then
-    candidate.live_entity.cancel_deconstruction(candidate.live_entity.force)
+    candidate.live_entity.cancel_deconstruction(candidate.force_name, candidate.player_index)
     return
   end
 
   if candidate.kind == "upgrade" then
-    candidate.live_entity.cancel_upgrade(candidate.live_entity.force, candidate.player_index)
+    candidate.live_entity.cancel_upgrade(candidate.force_name, candidate.player_index)
   end
 end
 
 local function mark_is_blockable(candidate)
   if candidate.kind == "deconstruction" then
-    return candidate.live_entity.is_registered_for_deconstruction(candidate.live_entity.force)
+    return candidate.live_entity.is_registered_for_deconstruction(candidate.force_name)
   end
 
   return candidate.live_entity.is_registered_for_upgrade()
@@ -501,16 +510,6 @@ local function block_live_ghost(root, candidate, analysis)
   end
 
   local snapshot = serialize_live_ghost(candidate.live_entity)
-  if has_unsupported_item_requests(snapshot) then
-    upsert_watch(root, candidate.live_entity)
-
-    if candidate.task ~= nil then
-      remove_deferred_task(root, candidate.task.id)
-    end
-
-    return "unsupported_item_requests"
-  end
-
   candidate.live_entity.destroy { raise_destroy = true }
   upsert_deferred_task(root, candidate.key, snapshot, analysis.reason, analysis.network_key, nil)
   remove_watch(root, candidate.key)
@@ -525,6 +524,7 @@ local function block_live_mark(root, candidate, analysis)
   local snapshot = serialize_marked_entity(
     candidate.live_entity,
     candidate.kind,
+    candidate.force_name,
     candidate.player_index,
     candidate.target,
     candidate.quality
@@ -563,10 +563,16 @@ local function release_deferred_task(root, candidate)
     return "restore_failed"
   end
 
-  local restored_mark = reapply_mark(candidate.task.snapshot)
-  if restored_mark ~= nil and restored_mark.valid then
+  local restored_mark, status = reapply_mark(candidate.task.snapshot)
+  if status == "reapplied" and restored_mark ~= nil and restored_mark.valid then
     remove_deferred_task(root, candidate.task.id)
     return "reapplied"
+  end
+
+  if status == "reapply_failed" then
+    candidate.task.last_status = "reapply_failed"
+    candidate.task.updated_tick = game.tick
+    return "reapply_failed"
   end
 
   remove_deferred_task(root, candidate.task.id)
@@ -620,12 +626,17 @@ local function evaluate_candidate(root, force, context, threat, candidate)
 end
 
 local function add_candidate(seen, ordered, candidate)
-  if candidate == nil or seen[candidate.key] ~= nil then
-    return
+  if candidate == nil or seen[candidate.key] ~= nil or #ordered >= constants.MAX_CANDIDATES_PER_RECHECK then
+    return false
   end
 
   seen[candidate.key] = candidate
   ordered[#ordered + 1] = candidate
+  return true
+end
+
+local function candidate_limit_reached(ordered)
+  return #ordered >= constants.MAX_CANDIDATES_PER_RECHECK
 end
 
 local function collect_scanned_candidates(root, force, surface, context)
@@ -641,15 +652,22 @@ local function collect_scanned_candidates(root, force, surface, context)
 
     for _, ghost in ipairs(ghosts) do
       add_candidate(seen, ordered, build_live_ghost_candidate(root, ghost))
+      if candidate_limit_reached(ordered) then
+        return ordered
+      end
     end
 
     local deconstruction_targets = surface.find_entities_filtered {
-      force = force.name,
       to_be_deconstructed = true
     }
 
     for _, entity in ipairs(deconstruction_targets) do
-      add_candidate(seen, ordered, build_live_mark_candidate(root, entity, "deconstruction"))
+      if entity.is_registered_for_deconstruction(force.name) then
+        add_candidate(seen, ordered, build_live_mark_candidate(root, entity, "deconstruction", force))
+        if candidate_limit_reached(ordered) then
+          return ordered
+        end
+      end
     end
 
     local upgrade_targets = surface.find_entities_filtered {
@@ -659,7 +677,10 @@ local function collect_scanned_candidates(root, force, surface, context)
 
     for _, entity in ipairs(upgrade_targets) do
       local target, quality = util.safe_get_upgrade_target(entity)
-      add_candidate(seen, ordered, build_live_mark_candidate(root, entity, "upgrade", nil, target, quality))
+      add_candidate(seen, ordered, build_live_mark_candidate(root, entity, "upgrade", force, nil, target, quality))
+      if candidate_limit_reached(ordered) then
+        return ordered
+      end
     end
   end
 
@@ -676,16 +697,23 @@ local function collect_scanned_candidates(root, force, surface, context)
 
     for _, ghost in ipairs(ghosts) do
       add_candidate(seen, ordered, build_live_ghost_candidate(root, ghost))
+      if candidate_limit_reached(ordered) then
+        return ordered
+      end
     end
 
     local deconstruction_targets = surface.find_entities_filtered {
       area = network.bounds,
-      force = force.name,
       to_be_deconstructed = true
     }
 
     for _, entity in ipairs(deconstruction_targets) do
-      add_candidate(seen, ordered, build_live_mark_candidate(root, entity, "deconstruction"))
+      if entity.is_registered_for_deconstruction(force.name) then
+        add_candidate(seen, ordered, build_live_mark_candidate(root, entity, "deconstruction", force))
+        if candidate_limit_reached(ordered) then
+          return ordered
+        end
+      end
     end
 
     local upgrade_targets = surface.find_entities_filtered {
@@ -696,11 +724,18 @@ local function collect_scanned_candidates(root, force, surface, context)
 
     for _, entity in ipairs(upgrade_targets) do
       local target, quality = util.safe_get_upgrade_target(entity)
-      add_candidate(seen, ordered, build_live_mark_candidate(root, entity, "upgrade", nil, target, quality))
+      add_candidate(seen, ordered, build_live_mark_candidate(root, entity, "upgrade", force, nil, target, quality))
+      if candidate_limit_reached(ordered) then
+        return ordered
+      end
     end
   end
 
   for key, watch in pairs(root.watch_ghosts) do
+    if candidate_limit_reached(ordered) then
+      return ordered
+    end
+
     if watch.surface_index == surface.index and watch.force_name == force.name then
       local live_entity = resolve_watch_entity(watch)
       if live_entity ~= nil and live_entity.valid then
@@ -712,6 +747,10 @@ local function collect_scanned_candidates(root, force, surface, context)
   end
 
   for _, task in pairs(root.deferred_tasks) do
+    if candidate_limit_reached(ordered) then
+      return ordered
+    end
+
     if task.surface_index == surface.index and task.force_name == force.name and seen[task.key] == nil then
       add_candidate(seen, ordered, {
         key = task.key,
@@ -765,8 +804,47 @@ function tasks.evaluate_live_ghost(root, force, context, threat, entity)
 end
 
 function tasks.evaluate_live_mark(root, force, context, threat, entity, kind, player_index, target, quality)
-  local candidate = build_live_mark_candidate(root, entity, kind, player_index, target, quality)
+  local candidate = build_live_mark_candidate(root, entity, kind, force, player_index, target, quality)
   return evaluate_candidate(root, force, context, threat, candidate)
+end
+
+function tasks.cancel_deferred_mark(root, force, entity, kind, target, quality)
+  if entity == nil or not entity.valid then
+    return false
+  end
+
+  local force_name = type(force) == "table" and force.name or force
+  local target_name = target and target.name or nil
+  local target_quality_name = util.quality_name(quality)
+  local key = make_mark_key(kind, entity.surface.index, force_name, entity, target_name, target_quality_name)
+  local task_id = root.deferred_task_keys[key]
+
+  if task_id == nil then
+    return false
+  end
+
+  remove_deferred_task(root, task_id)
+  return true
+end
+
+function tasks.clear_deferred(root, surface_index, force_name, area)
+  local task_ids = {}
+
+  for task_id, task in pairs(root.deferred_tasks) do
+    local matches_surface = surface_index == nil or task.surface_index == surface_index
+    local matches_force = force_name == nil or task.force_name == force_name
+    local matches_area = area == nil or util.bbox_contains(area, task.position)
+
+    if matches_surface and matches_force and matches_area then
+      task_ids[#task_ids + 1] = task_id
+    end
+  end
+
+  for _, task_id in ipairs(task_ids) do
+    remove_deferred_task(root, task_id)
+  end
+
+  return #task_ids
 end
 
 function tasks.recheck_force_surface(root, force, surface, context, threat)
