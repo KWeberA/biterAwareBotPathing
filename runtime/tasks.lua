@@ -304,12 +304,16 @@ local function resolve_watch_entity(watch)
   local entities = surface.find_entities_filtered {
     position = watch.position,
     force = watch.force_name,
-    type = watch.kind,
-    ghost_name = watch.inner_name,
-    limit = 1
+    type = watch.kind
   }
 
-  return entities[1]
+  for _, entity in ipairs(entities) do
+    if entity.valid and entity.ghost_name == watch.inner_name then
+      return entity
+    end
+  end
+
+  return nil
 end
 
 local function resolve_mark_target(snapshot)
@@ -319,29 +323,58 @@ end
 local function restore_ghost(snapshot)
   local surface = game.surfaces[snapshot.surface_index]
   if surface == nil then
-    return nil
+    return nil, "surface_missing"
+  end
+
+  local kind = snapshot.kind
+  if kind == "entity-ghost" and prototypes.entity[snapshot.inner_name] == nil
+    and prototypes.tile[snapshot.inner_name] ~= nil
+  then
+    kind = "tile-ghost"
+  elseif kind == "tile-ghost" and prototypes.tile[snapshot.inner_name] == nil
+    and prototypes.entity[snapshot.inner_name] ~= nil
+  then
+    kind = "entity-ghost"
+  end
+
+  if kind == "entity-ghost" and prototypes.entity[snapshot.inner_name] == nil then
+    return nil, "unknown_entity_prototype"
+  end
+
+  if kind == "tile-ghost" and prototypes.tile[snapshot.inner_name] == nil then
+    return nil, "unknown_tile_prototype"
   end
 
   local params = {
-    name = snapshot.kind,
+    name = kind,
     position = snapshot.position,
     inner_name = snapshot.inner_name,
     force = snapshot.force_name,
-    quality = snapshot.quality_name,
     raise_built = true
   }
 
-  if snapshot.kind == "entity-ghost" then
+  if kind == "entity-ghost" then
     params.direction = snapshot.direction
     params.tags = snapshot.tags
+    params.quality = snapshot.quality_name
   end
 
-  local entity = surface.create_entity(params)
-  if entity ~= nil and entity.valid and snapshot.kind == "entity-ghost" then
+  local ok, entity = pcall(function()
+    return surface.create_entity(params)
+  end)
+  if not ok then
+    return nil, "create_failed"
+  end
+
+  if entity ~= nil and entity.valid and kind == "entity-ghost" then
     restore_item_requests(entity, snapshot)
   end
 
-  return entity
+  if entity == nil or not entity.valid then
+    return nil, "create_failed"
+  end
+
+  return entity, "restored"
 end
 
 local function reapply_mark(snapshot)
@@ -504,17 +537,29 @@ local function keep_live_ghost_visible(root, candidate)
   end
 end
 
-local function block_live_ghost(root, candidate, analysis)
-  if not ghost_is_blockable(candidate.live_entity) then
+local function keep_live_ghost_tracked(root, candidate, analysis)
+  if candidate.live_entity == nil or not candidate.live_entity.valid then
     remove_watch(root, candidate.key)
+    if candidate.task ~= nil then
+      remove_deferred_task(root, candidate.task.id)
+    end
+
+    return "missing"
+  end
+
+  upsert_watch(root, candidate.live_entity)
+
+  if not ghost_is_blockable(candidate.live_entity) then
+    if candidate.task ~= nil then
+      remove_deferred_task(root, candidate.task.id)
+    end
+
     return "already_dispatched"
   end
 
   local snapshot = serialize_live_ghost(candidate.live_entity)
-  candidate.live_entity.destroy { raise_destroy = true }
-  upsert_deferred_task(root, candidate.key, snapshot, analysis.reason, analysis.network_key, nil)
-  remove_watch(root, candidate.key)
-  return "deferred"
+  upsert_deferred_task(root, candidate.key, snapshot, analysis.reason, analysis.network_key, candidate.live_entity)
+  return analysis.reason
 end
 
 local function block_live_mark(root, candidate, analysis)
@@ -590,18 +635,31 @@ local function release_live_candidate(root, candidate)
   return "released"
 end
 
+local function restore_hidden_live_ghost(root, candidate, analysis)
+  local restored, status = restore_ghost(candidate.task.snapshot)
+  if restored == nil or not restored.valid then
+    candidate.task.last_status = status or "restore_failed"
+    candidate.task.updated_tick = game.tick
+    return status or "restore_failed"
+  end
+
+  local live_candidate = build_live_ghost_candidate(root, restored)
+  live_candidate.task = candidate.task
+
+  if analysis.status == "released" then
+    return release_live_candidate(root, live_candidate)
+  end
+
+  return keep_live_ghost_tracked(root, live_candidate, analysis)
+end
+
 local function evaluate_candidate(root, force, context, threat, candidate)
   local analysis = analyze_candidate(force, context, threat, candidate)
 
   if candidate.live_entity ~= nil then
     if candidate.kind == "entity-ghost" or candidate.kind == "tile-ghost" then
-      if analysis.status == "outside_coverage" then
-        keep_live_ghost_visible(root, candidate)
-        return analysis.status
-      end
-
-      if analysis.status == "blocked" then
-        return block_live_ghost(root, candidate, analysis)
+      if analysis.status ~= "released" then
+        return keep_live_ghost_tracked(root, candidate, analysis)
       end
 
       return release_live_candidate(root, candidate)
@@ -615,6 +673,10 @@ local function evaluate_candidate(root, force, context, threat, candidate)
   end
 
   if candidate.task ~= nil then
+    if candidate.task.kind == "entity-ghost" or candidate.task.kind == "tile-ghost" then
+      return restore_hidden_live_ghost(root, candidate, analysis)
+    end
+
     if analysis.status == "released" then
       return release_deferred_task(root, candidate)
     end

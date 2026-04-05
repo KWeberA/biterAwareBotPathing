@@ -30,6 +30,16 @@ local function create_live_ghost(surface, force, inner_name, position)
   }
 end
 
+local function create_tile_ghost(surface, force, inner_name, position)
+  return surface.create_entity {
+    name = "tile-ghost",
+    inner_name = inner_name,
+    position = position,
+    force = force,
+    raise_built = true
+  }
+end
+
 local function validate_test_map(summary, run_index)
   if summary == nil then
     fail("test_map_setup returned nil on run " .. run_index)
@@ -94,6 +104,10 @@ local function run_live_path_validation(summary)
     x = summary.origin.x + 76,
     y = summary.origin.y + 48
   }
+  local outside_coverage_position = {
+    x = summary.origin.x + 118,
+    y = summary.origin.y + 118
+  }
   local unsafe_deconstruction_position = {
     x = summary.origin.x + 72,
     y = summary.origin.y + 50
@@ -138,8 +152,8 @@ local function run_live_path_validation(summary)
   end
 
   local unsafe_ghost = create_live_ghost(surface, force, "stone-wall", unsafe_build_position)
-  if unsafe_ghost ~= nil and unsafe_ghost.valid then
-    fail("unsafe live build ghost was not deferred")
+  if unsafe_ghost == nil or not unsafe_ghost.valid then
+    fail("unsafe live build ghost was unexpectedly removed")
   end
 
   local remaining_unsafe_ghost = surface.find_entities_filtered {
@@ -148,8 +162,65 @@ local function run_live_path_validation(summary)
     force = force.name,
     limit = 1
   }[1]
-  if remaining_unsafe_ghost ~= nil and remaining_unsafe_ghost.valid then
-    fail("unsafe live build ghost is still present after defer")
+  if remaining_unsafe_ghost == nil or not remaining_unsafe_ghost.valid then
+    fail("unsafe live build ghost is no longer present after placement")
+  end
+
+  destroy_entities_at(surface, outside_coverage_position)
+  local outside_coverage_ghost = create_live_ghost(surface, force, "stone-wall", outside_coverage_position)
+  if outside_coverage_ghost == nil or not outside_coverage_ghost.valid then
+    fail("outside coverage live build ghost was unexpectedly removed")
+  end
+  outside_coverage_position = outside_coverage_ghost.position
+
+  local foundation_tile_supported = prototypes.tile["foundation"] ~= nil
+  local foundation_tile_position = {
+    x = outside_coverage_position.x + 2,
+    y = outside_coverage_position.y + 2
+  }
+  local foundation_tile_visible = nil
+  if foundation_tile_supported then
+    local foundation_ghost = create_tile_ghost(surface, force, "foundation", foundation_tile_position)
+    if foundation_ghost == nil or not foundation_ghost.valid then
+      fail("foundation tile ghost could not be created for validation")
+    end
+
+    foundation_tile_position = foundation_ghost.position
+    foundation_tile_visible = true
+  end
+
+  remote.call(MOD_NAME, "recheck", summary.surface_name, summary.force_name)
+
+  local after_recheck_unsafe_ghost = surface.find_entities_filtered {
+    position = unsafe_build_position,
+    type = "entity-ghost",
+    force = force.name,
+    limit = 1
+  }[1]
+  if after_recheck_unsafe_ghost == nil or not after_recheck_unsafe_ghost.valid then
+    fail("unsafe live build ghost disappeared during recheck")
+  end
+
+  local after_recheck_outside_coverage_ghost = surface.find_entities_filtered {
+    position = outside_coverage_position,
+    type = "entity-ghost",
+    force = force.name,
+    limit = 1
+  }[1]
+  if after_recheck_outside_coverage_ghost == nil or not after_recheck_outside_coverage_ghost.valid then
+    fail("outside coverage live build ghost disappeared during recheck")
+  end
+
+  if foundation_tile_supported then
+    local after_recheck_foundation_tile_ghost = surface.find_entities_filtered {
+      position = foundation_tile_position,
+      type = "tile-ghost",
+      force = force.name,
+      limit = 1
+    }[1]
+    if after_recheck_foundation_tile_ghost == nil or not after_recheck_foundation_tile_ghost.valid then
+      fail("foundation tile ghost disappeared during recheck")
+    end
   end
 
   local resolved_unsafe_deconstruction_position = surface.find_non_colliding_position(
@@ -190,7 +261,12 @@ local function run_live_path_validation(summary)
     safe_build_position = safe_build_position,
     safe_build_kept_visible = true,
     unsafe_build_position = unsafe_build_position,
-    unsafe_build_deferred = true,
+    unsafe_build_kept_visible = true,
+    outside_coverage_position = outside_coverage_position,
+    outside_coverage_build_kept_visible = true,
+    foundation_tile_supported = foundation_tile_supported,
+    foundation_tile_position = foundation_tile_position,
+    foundation_tile_kept_visible = foundation_tile_visible,
     unsafe_deconstruction_position = unsafe_deconstruction_position,
     unsafe_deconstruction_deferred = true
   }
