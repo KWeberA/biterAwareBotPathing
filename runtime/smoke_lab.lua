@@ -106,6 +106,14 @@ local function create_roboport(surface, force, position)
   return roboport
 end
 
+local function require_valid_entity(entity, entity_name, position)
+  if entity == nil or not entity.valid then
+    error(entity_name .. " could not be created at " .. util.position_key(position))
+  end
+
+  return entity
+end
+
 local function create_wall_line(surface, force, from_position, to_position)
   if from_position.x == to_position.x then
     local start_y = math.min(from_position.y, to_position.y)
@@ -269,20 +277,44 @@ local function ensure_test_map_surface()
   return surface
 end
 
-local function clear_test_map_area(surface, area)
-  local safe_position = {
+local function find_safe_character_position(surface, area)
+  local preferred_position = {
     x = area.left_top.x - 16,
     y = area.left_top.y - 16
   }
 
-  for _, player in pairs(game.connected_players) do
-    if player.valid and player.surface == surface and util.bbox_contains(area, player.position) then
-      player.teleport(safe_position, surface)
+  return surface.find_non_colliding_position("character", preferred_position, 32, 0.5, true)
+    or surface.find_non_colliding_position("character", preferred_position, 64, 1, true)
+end
+
+local function clear_test_map_area(surface, area)
+  local safe_position = find_safe_character_position(surface, area)
+  if safe_position == nil then
+    error("could not find a safe position outside the test map area")
+  end
+
+  for _, player in pairs(game.players) do
+    local character = player.character
+    local position = character ~= nil and character.valid and character.position or player.position
+    if player.valid and player.surface == surface and util.bbox_contains(area, position) then
+      local teleported = player.teleport(safe_position, surface)
+      if not teleported then
+        error("could not move player '" .. player.name .. "' out of the test map area")
+      end
     end
   end
 
+  local remaining_characters = surface.find_entities_filtered {
+    area = area,
+    type = "character"
+  }
+
+  if #remaining_characters > 0 then
+    error("test map area still contains " .. #remaining_characters .. " character entity or entities")
+  end
+
   for _, entity in ipairs(surface.find_entities(area)) do
-    if entity.valid and entity.type ~= "character" then
+    if entity.valid then
       entity.destroy()
     end
   end
@@ -416,17 +448,29 @@ local function create_test_map_roboports(surface, force, corner, leg_length, spa
   local roboports = {}
 
   for offset = 0, leg_length - 1, spacing do
-    roboports[#roboports + 1] = create_roboport(surface, force, {
+    local position = {
       x = corner.x + offset,
       y = corner.y
-    })
+    }
+
+    roboports[#roboports + 1] = require_valid_entity(
+      create_roboport(surface, force, position),
+      "roboport",
+      position
+    )
   end
 
   for offset = spacing, leg_length - 1, spacing do
-    roboports[#roboports + 1] = create_roboport(surface, force, {
+    local position = {
       x = corner.x,
       y = corner.y + offset
-    })
+    }
+
+    roboports[#roboports + 1] = require_valid_entity(
+      create_roboport(surface, force, position),
+      "roboport",
+      position
+    )
   end
 
   return roboports
@@ -518,6 +562,14 @@ local function run_setup_step(step_name, work)
   return result_a, result_b, result_c
 end
 
+local function clear_test_map_metadata(root, surface_index)
+  for key, lab in pairs(root.smoke_labs) do
+    if lab ~= nil and lab.surface_index == surface_index and lab.name == constants.TEST_MAP_NAME then
+      root.smoke_labs[key] = nil
+    end
+  end
+end
+
 function smoke_lab.setup(root, player_index)
   local player = find_player(player_index)
   local surface = player and player.valid and player.surface or game.surfaces[1]
@@ -569,6 +621,7 @@ function smoke_lab.setup_test_map(root, player_index)
   local roboport_spacing = 20
   local arm_half_width = 10
   local clear_padding = 40
+  local horizontal_roboport_count = math.floor((leg_length - 1) / roboport_spacing) + 1
   local player = find_player(player_index)
   local force = player and player.force or game.forces.player
   local surface = ensure_test_map_surface()
@@ -587,7 +640,11 @@ function smoke_lab.setup_test_map(root, player_index)
   local roboports = run_setup_step("place roboports", function()
     return create_test_map_roboports(surface, force, corner, leg_length, roboport_spacing)
   end)
-  local rightmost_roboport = roboports[math.floor(leg_length / roboport_spacing) + 1]
+  local rightmost_roboport = require_valid_entity(
+    roboports[horizontal_roboport_count],
+    "outer right roboport",
+    { x = corner.x + ((horizontal_roboport_count - 1) * roboport_spacing), y = corner.y }
+  )
   fill(rightmost_roboport, "construction-robot", 10)
 
   local nests, worms, spitters = run_setup_step("place threats", function()
@@ -599,10 +656,21 @@ function smoke_lab.setup_test_map(root, player_index)
 
   if player ~= nil then
     run_setup_step("teleport player", function()
-      player.teleport({ x = corner.x + 8, y = corner.y - 8 }, surface)
+      local target_position = surface.find_non_colliding_position(
+        "character",
+        { x = corner.x + 8, y = corner.y - 8 },
+        16,
+        0.5,
+        true
+      )
+
+      if target_position == nil or not player.teleport(target_position, surface) then
+        error("could not teleport player to the rebuilt test map")
+      end
     end)
   end
 
+  clear_test_map_metadata(root, surface.index)
   local force_surface_key = util.force_surface_key(surface.index, force.name)
   root.smoke_labs[force_surface_key] = {
     name = constants.TEST_MAP_NAME,
