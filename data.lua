@@ -1,0 +1,2 @@
+-- Prototype stage entry point.
+-- Add items, entities, recipes, technologies, and other prototypes here.

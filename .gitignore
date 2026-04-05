@@ -1,0 +1,9 @@
+*.zip
+*.log
+*.tmp
+*.bak
+.factorio-test/
+script-output/
+factorio-current.log
+factorio-previous.log
+factorio-test-config.ini

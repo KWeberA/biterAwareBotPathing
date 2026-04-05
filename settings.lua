@@ -1,0 +1,2 @@
+-- Settings stage entry point.
+-- Add startup, runtime-per-user, or map-gen settings here.

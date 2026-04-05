@@ -1,0 +1,2 @@
+-- Prototype final-fixes stage entry point.
+-- Use this file for the last prototype pass before the game loads data.

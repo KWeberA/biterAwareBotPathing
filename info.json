@@ -1,0 +1,11 @@
+{
+  "name": "biterAwareBotPathing",
+  "version": "0.1.0",
+  "title": "Biter Aware Bot Pathing",
+  "author": "Alex",
+  "description": "Starter scaffolding for a Factorio 2.0 mod.",
+  "factorio_version": "2.0",
+  "dependencies": [
+    "base >= 2.0"
+  ]
+}
