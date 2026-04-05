@@ -1,9 +1,20 @@
--- Runtime stage entry point.
--- Keep persistent state inside `global` and register event handlers here.
+local constants = require("runtime.constants")
+local manager = require("runtime.manager")
 
-local function ensure_global_state()
-  global.biter_aware_bot_pathing = global.biter_aware_bot_pathing or {}
-end
+script.on_init(manager.on_init)
+script.on_load(manager.on_load)
+script.on_configuration_changed(manager.on_configuration_changed)
 
-script.on_init(ensure_global_state)
-script.on_configuration_changed(ensure_global_state)
+script.on_event(defines.events.on_built_entity, manager.on_built_entity)
+script.on_event(defines.events.script_raised_built, manager.on_built_entity)
+script.on_event(defines.events.on_marked_for_deconstruction, manager.on_marked_for_deconstruction)
+script.on_event(defines.events.on_marked_for_upgrade, manager.on_marked_for_upgrade)
+script.on_event(defines.events.on_player_mined_entity, manager.on_entity_removed)
+script.on_event(defines.events.on_robot_mined_entity, manager.on_entity_removed)
+script.on_event(defines.events.on_entity_died, manager.on_entity_removed)
+script.on_event(defines.events.on_biter_base_built, manager.on_biter_base_built)
+script.on_event(defines.events.on_object_destroyed, manager.on_object_destroyed)
+script.on_nth_tick(constants.NTH_TICK, manager.on_nth_tick)
+
+manager.register_commands()
+remote.add_interface("biter_aware_bot_pathing", manager.remote_interface())

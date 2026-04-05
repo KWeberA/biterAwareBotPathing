@@ -1,9 +1,9 @@
 {
   "name": "biterAwareBotPathing",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "title": "Biter Aware Bot Pathing",
   "author": "Alex",
-  "description": "Starter scaffolding for a Factorio 2.0 mod.",
+  "description": "Keeps construction bots from taking unsafe flights over biter nests and outside your defenses by deferring risky jobs and releasing them step by step through a safe roboport frontier.",
   "factorio_version": "2.0",
   "dependencies": [
     "base >= 2.0"
